@@ -1,3 +1,3 @@
-protoc --gogo_out=. proto/gateway.proto
-protoc --gogo_out=. proto/nwkmgr.proto
-protoc --gogo_out=. proto/otasrvr.proto
+protoc --gogo_out=. gateway/gateway.proto
+protoc --gogo_out=. nwkmgr/nwkmgr.proto
+protoc --gogo_out=. otasrvr/otasrvr.proto
