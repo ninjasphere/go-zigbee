@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"time"
 
 	"code.google.com/p/gogoprotobuf/proto"
 
@@ -18,24 +19,22 @@ import (
 )
 
 const (
-	nwkmgrPort  = 2536
-	gatewayPort = 2541
-	otasrvrPort = 2540
+  hostname = "10.0.1.164"
+  otasrvrPort  = 2525
+  gatewayPort = 2541
+  nwkmgrPort = 2540
 )
 
 // ZStackServer holds the connection to one of the Z-Stack servers (nwkmgr, gateway and otasrvr)
 type ZStackServer struct {
 	name      string
 	subsystem int8
-	conn      *net.TCPConn
+	conn      net.Conn
 }
 
 func connectToServer(name string, subsystem int8, port int) (*ZStackServer, error) {
 
-	conn, err := net.DialTCP("tcp4", nil, &net.TCPAddr{
-		IP:   net.ParseIP("10.0.1.164"),
-		Port: port,
-	})
+	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", hostname, port))
 
 	if err != nil {
 		return nil, err
@@ -43,6 +42,7 @@ func connectToServer(name string, subsystem int8, port int) (*ZStackServer, erro
 
 	go func() {
 		for {
+			log.Printf("Reading from %s", name)
 			buf := make([]byte, 1024)
 			n, err := conn.Read(buf)
 			if err != nil {
@@ -62,7 +62,13 @@ func connectToServer(name string, subsystem int8, port int) (*ZStackServer, erro
 func main() {
 	log.Println("Starting")
 
-	_, err := connectToServer("nwkmgr", int8(nwkmgr.ZStackNwkMgrSysIdT_RPC_SYS_PB_NWK_MGR), nwkmgrPort)
+	_, err := connectToServer("otasrvr", int8(otasrvr.ZStackOTASysIDs_RPC_SYS_PB_OTA_MGR), otasrvrPort)
+	if err != nil {
+		// handle error
+		log.Printf("Error connecting otasrvr %s", err)
+	}
+
+	nwkmgrConn, err := connectToServer("nwkmgr", int8(nwkmgr.ZStackNwkMgrSysIdT_RPC_SYS_PB_NWK_MGR), nwkmgrPort)
 	if err != nil {
 		// handle error
 		log.Printf("Error connecting nwkmgr %s", err)
@@ -72,11 +78,6 @@ func main() {
 		// handle error
 		log.Printf("Error connecting gateway %s", err)
 	}
-	_, err = connectToServer("otasrvr", int8(otasrvr.ZStackOTASysIDs_RPC_SYS_PB_OTA_MGR), otasrvrPort)
-	if err != nil {
-		// handle error
-		log.Printf("Error connecting otasrvr %s", err)
-	}
 
 	/*joinTime := uint32(30)
 	command := &nwkmgr.NwkSetPermitJoinReq{
@@ -85,11 +86,11 @@ func main() {
 	}*/
 
 	//command := &nwkmgr.NwkZigbeeNwkInfoReq{}
-	//command := &nwkmgr.NwkGetLocalDeviceInfoReq{}
+	command := &nwkmgr.NwkGetLocalDeviceInfoReq{}
 
-	//time.Sleep(2000 * time.Millisecond)
+	time.Sleep(2000 * time.Millisecond)
 
-	//nwkmgrConn.sendCommand(command, int8(command.GetCmdId()))
+	nwkmgrConn.sendCommand(command, int8(command.GetCmdId()))
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, os.Kill)
@@ -123,5 +124,5 @@ func (s *ZStackServer) sendCommand(command proto.Message, commandID int8) {
 	//fmt.Fprintf(conn, "GET / HTTP/1.0\r\n\r\n")
 	//status, err := bufio.NewReader(conn).ReadString('\n')
 
-	//_, err = s.conn.Write(buffer.Bytes())
+	_, err = s.conn.Write(buffer.Bytes())
 }
