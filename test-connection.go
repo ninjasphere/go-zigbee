@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"time"
 
 	"code.google.com/p/gogoprotobuf/proto"
 
@@ -30,32 +29,31 @@ const (
 type ZStackServer struct {
 	Incoming chan *[]byte // Incoming raw protobuf packets
 
-	name               string
-	subsystem          int8
-	conn               net.Conn
-	outgoing           chan *ZStackCommand // Outgoing protobuf messages
-	pendingByCommandID map[int8]*ZStackPendingResponse
+	name      string
+	subsystem int8
+	conn      net.Conn
+	outgoing  chan *ZStackCommand // Outgoing protobuf messages
+	pending   *ZStackPendingCommand
 }
 
-func (s *ZStackServer) sendCommand(message *ZStackCommand) {
-	s.outgoing <- message
-}
+func (s *ZStackServer) sendCommand(request *ZStackCommand, response *ZStackCommand) error {
 
-func (s *ZStackServer) sendRequest(request *ZStackCommand, response *ZStackCommand) (chan error, error) {
 	s.outgoing <- request
 
-	pending := &ZStackPendingResponse{
-		message:  response.message,
+	s.pending = &ZStackPendingCommand{
+		response: response,
 		complete: make(chan error),
 	}
 
-	if s.pendingByCommandID[response.commandID] != nil {
-		return nil, fmt.Errorf("There is already a pending command waiting for the same response (Command ID: %X)", response.commandID)
-	}
+	error := <-s.pending.complete
+	s.pending = nil
+	return error
+}
 
-	s.pendingByCommandID[response.commandID] = pending
-
-	return pending.complete, nil
+// ZStackOutgoingCommand is a thing
+type ZStackPendingCommand struct {
+	response *ZStackCommand
+	complete chan error
 }
 
 // ZStackCommand contains a protobuf message and a command id
@@ -64,28 +62,14 @@ type ZStackCommand struct {
 	commandID int8
 }
 
-// ZStackPendingResponse contains the protobuf command to be filled with the response, and a 'complete' channel to indicate when done
-type ZStackPendingResponse struct {
-	message  proto.Message
-	complete chan error
-}
-
 type ZStackNwkMgrServer struct {
 	*ZStackServer
 }
 
-// SendCommand sends a protobuf Message to the Z-Stack server
-func (s *ZStackNwkMgrServer) SendCommand(command zStackNwkCommand) {
-	s.sendCommand(&ZStackCommand{
-		message:   command,
-		commandID: int8(command.GetCmdId()),
-	})
-}
-
 // SendRequest sends a protobuf Message to the Z-Stack server, and waits for the response
-func (s *ZStackNwkMgrServer) SendRequest(request zStackNwkCommand, response zStackNwkCommand) error {
+func (s *ZStackNwkMgrServer) SendCommand(request zStackNwkCommand, response zStackNwkCommand) error {
 
-	complete, err := s.sendRequest(&ZStackCommand{
+	return s.sendCommand(&ZStackCommand{
 		message:   request,
 		commandID: int8(request.GetCmdId()),
 	}, &ZStackCommand{
@@ -93,29 +77,38 @@ func (s *ZStackNwkMgrServer) SendRequest(request zStackNwkCommand, response zSta
 		commandID: int8(response.GetCmdId()),
 	})
 
-	if err != nil {
-		return err
-	}
+}
 
-	return <-complete
+type pendingGatewayResponse struct {
+	response zStackGatewayCommand
+	finished chan error
 }
 
 type ZStackGatewayServer struct {
 	*ZStackServer
+	pendingResponses map[uint8]*pendingGatewayResponse
 }
 
-// SendCommand sends a protobuf Message to the Z-Stack server
-func (s *ZStackGatewayServer) SendCommand(command zStackGatewayCommand) {
-	s.sendCommand(&ZStackCommand{
-		message:   command,
-		commandID: int8(command.GetCmdId()),
-	})
+func (s *ZStackGatewayServer) WaitForSequenceResponse(sequenceNumber *uint32, response zStackGatewayCommand) error {
+	number := uint8(*sequenceNumber) // We accept uint32 as thats what comes back from protobuf
+	_, exists := s.pendingResponses[number]
+	if exists {
+		s.pendingResponses[number].finished <- fmt.Errorf("Another command with the same sequence id (%d) has been sent.", number)
+	}
+
+	pending := &pendingGatewayResponse{
+		response: response,
+		finished: make(chan error),
+	}
+	s.pendingResponses[number] = pending
+
+	return <-pending.finished
 }
 
-// SendRequest sends a protobuf Message to the Z-Stack server, and waits for the response
-func (s *ZStackGatewayServer) SendRequest(request zStackGatewayCommand, response zStackGatewayCommand) error {
+// SendCommand sends a protobuf Message to the Z-Stack server, and waits for the response
+func (s *ZStackGatewayServer) SendCommand(request zStackGatewayCommand, response zStackGatewayCommand) error {
 
-	complete, err := s.sendRequest(&ZStackCommand{
+	return s.sendCommand(&ZStackCommand{
 		message:   request,
 		commandID: int8(request.GetCmdId()),
 	}, &ZStackCommand{
@@ -123,11 +116,47 @@ func (s *ZStackGatewayServer) SendRequest(request zStackGatewayCommand, response
 		commandID: int8(response.GetCmdId()),
 	})
 
-	if err != nil {
-		return err
+}
+
+func (s *ZStackGatewayServer) incomingZCLLoop() {
+
+	for {
+		bytes := <-s.Incoming
+
+		log.Printf("gateway: Got gateway message % X", bytes)
+
+		commandID := uint8((*bytes)[1])
+
+		var message = &gateway.GwZigbeeGenericRspInd{} // Not always this, but it will always give us the sequence number?
+		err := proto.Unmarshal(*bytes, message)
+		if err != nil {
+			log.Printf("gateway: Could not get sequence number from incoming gateway message : %s", err)
+			continue
+		}
+
+		sequenceNumber := uint8(*message.SequenceNumber)
+
+		log.Printf("gateway: Got an incoming gateway message, sequence:%d", sequenceNumber)
+
+		if sequenceNumber == 0 {
+			log.Printf("gateway: Failed to get a sequence number from an incoming gateway message. ????")
+		}
+		outJSON(message)
+
+		pending := s.pendingResponses[sequenceNumber]
+
+		if pending == nil {
+			log.Printf("gateway: Received response to sequence number %d but we aren't listening for it", sequenceNumber)
+		} else {
+
+			if uint8(pending.response.GetCmdId()) != commandID {
+				pending.finished <- fmt.Errorf("Wrong ZCL response type. Wanted: 0x%X Received: 0x%X", uint8(pending.response.GetCmdId()), commandID)
+			}
+			pending.finished <- proto.Unmarshal(*bytes, pending.response)
+		}
+
 	}
 
-	return <-complete
 }
 
 type zStackNwkCommand interface {
@@ -215,12 +244,9 @@ func (s *ZStackServer) incomingLoop() {
 
 			// Check if this packet has a ZCL request id... TODO
 
-			// Check if we have any pending requests that want this command id...
-			pending := s.pendingByCommandID[commandID]
-
-			if pending != nil {
-				s.pendingByCommandID[commandID] = nil
-				pending.complete <- proto.Unmarshal(packet, pending.message)
+			if s.pending != nil {
+				s.pending.complete <- proto.Unmarshal(packet, s.pending.response.message)
+				s.pending = nil
 
 			} else { // Or just send it out to be handled elsewhere
 				s.Incoming <- &packet
@@ -245,12 +271,11 @@ func connectToServer(name string, subsystem int8, port int) (*ZStackServer, erro
 	}
 
 	server := &ZStackServer{
-		name:               name,
-		subsystem:          subsystem,
-		conn:               conn,
-		outgoing:           make(chan *ZStackCommand),
-		Incoming:           make(chan *[]byte),
-		pendingByCommandID: make(map[int8]*ZStackPendingResponse),
+		name:      name,
+		subsystem: subsystem,
+		conn:      conn,
+		outgoing:  make(chan *ZStackCommand),
+		Incoming:  make(chan *[]byte),
 	}
 
 	go server.incomingLoop()
@@ -281,24 +306,17 @@ func main() {
 		log.Printf("Error connecting gateway %s", err)
 	}
 
-	gatewayConn := &ZStackGatewayServer{gatewayTemp}
+	gatewayConn := &ZStackGatewayServer{
+		ZStackServer:     gatewayTemp,
+		pendingResponses: make(map[uint8]*pendingGatewayResponse),
+	}
+	go gatewayConn.incomingZCLLoop()
 
-	go func() {
-		for {
-			bytes := <-gatewayConn.Incoming
-
-			log.Printf("Got gateway message % X", bytes)
-
-			var message = &gateway.GwAttributeReportingInd{}
-			err = proto.Unmarshal(*bytes, message)
-			outJSON(message)
-
-		}
-	}()
+	//gatewayConn.pendingResponses = make(map[uint8]*pendingGatewayResponse)
 
 	//command := &nwkmgr.NwkZigbeeNwkInfoReq{}
 	response := &nwkmgr.NwkGetLocalDeviceInfoCnf{}
-	err = nwkmgrConn.SendRequest(&nwkmgr.NwkGetLocalDeviceInfoReq{}, response)
+	err = nwkmgrConn.SendCommand(&nwkmgr.NwkGetLocalDeviceInfoReq{}, response)
 
 	if err != nil {
 		log.Fatalf("Failed to get local device info: %s", err)
@@ -314,7 +332,7 @@ func main() {
 
 	permitJoinResponse := &nwkmgr.NwkZigbeeGenericCnf{}
 
-	err = nwkmgrConn.SendRequest(permitJoinRequest, permitJoinResponse)
+	err = nwkmgrConn.SendCommand(permitJoinRequest, permitJoinResponse)
 	if err != nil {
 		log.Fatalf("Failed to enable joining: %s", err)
 	}
@@ -326,7 +344,7 @@ func main() {
 
 	deviceListResponse := &nwkmgr.NwkGetDeviceListCnf{}
 
-	err = nwkmgrConn.SendRequest(&nwkmgr.NwkGetDeviceListReq{}, deviceListResponse)
+	err = nwkmgrConn.SendCommand(&nwkmgr.NwkGetDeviceListReq{}, deviceListResponse)
 	if err != nil {
 		log.Fatalf("Failed to get device list: %s", err)
 	}
@@ -349,18 +367,27 @@ func main() {
 					State: gateway.GwOnOffStateT_TOGGLE_STATE.Enum(),
 				}
 
-				res := &gateway.GwZigbeeGenericCnf{}
-
 				for i := 0; i < 3; i++ {
 					log.Println("Toggling on/off device")
 
-					err = gatewayConn.SendRequest(onOffReq, res)
+					confirmation := &gateway.GwZigbeeGenericCnf{}
+
+					err = gatewayConn.SendCommand(onOffReq, confirmation)
 					if err != nil {
 						log.Fatalf("Failed to toggle device: ", err)
 					}
-					log.Printf("Got on/off response")
-					outJSON(res)
-					time.Sleep(2000 * time.Millisecond)
+					log.Printf("Got on/off confirmation")
+					outJSON(confirmation)
+
+					response := &gateway.GwZigbeeGenericRspInd{}
+					err = gatewayConn.WaitForSequenceResponse(confirmation.SequenceNumber, response)
+					if err != nil {
+						log.Fatalf("Failed to get on/off response: ", err)
+					}
+
+					log.Printf("Got toggle response from device! Status: %s", response.Status.String())
+
+					//time.Sleep(2000 * time.Millisecond)
 				}
 
 			}
