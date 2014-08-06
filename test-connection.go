@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"time"
 
 	"code.google.com/p/gogoprotobuf/proto"
 
@@ -99,16 +100,48 @@ func (s *ZStackNwkMgrServer) SendRequest(request zStackNwkCommand, response zSta
 	return <-complete
 }
 
+type ZStackGatewayServer struct {
+	*ZStackServer
+}
+
+// SendCommand sends a protobuf Message to the Z-Stack server
+func (s *ZStackGatewayServer) SendCommand(command zStackGatewayCommand) {
+	s.sendCommand(&ZStackCommand{
+		message:   command,
+		commandID: int8(command.GetCmdId()),
+	})
+}
+
+// SendRequest sends a protobuf Message to the Z-Stack server, and waits for the response
+func (s *ZStackGatewayServer) SendRequest(request zStackGatewayCommand, response zStackGatewayCommand) error {
+
+	complete, err := s.sendRequest(&ZStackCommand{
+		message:   request,
+		commandID: int8(request.GetCmdId()),
+	}, &ZStackCommand{
+		message:   response,
+		commandID: int8(response.GetCmdId()),
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return <-complete
+}
+
 type zStackNwkCommand interface {
 	proto.Message
 	GetCmdId() nwkmgr.NwkMgrCmdIdT
 }
 
-type zStackGatewayMessage interface {
+type zStackGatewayCommand interface {
+	proto.Message
 	GetCmdId() gateway.GwCmdIdT
 }
 
-type zStackOtaMgrMessage interface {
+type zStackOtaMgrCommand interface {
+	proto.Message
 	GetCmdId() otasrvr.OtaMgrCmdIdT
 }
 
@@ -178,19 +211,21 @@ func (s *ZStackServer) incomingLoop() {
 
 			commandID := int8(packet[1])
 
+			log.Printf("%s: Command ID:0x%X Packet: % X", s.name, commandID, packet)
+
 			// Check if this packet has a ZCL request id... TODO
 
 			// Check if we have any pending requests that want this command id...
 			pending := s.pendingByCommandID[commandID]
 
 			if pending != nil {
+				s.pendingByCommandID[commandID] = nil
 				pending.complete <- proto.Unmarshal(packet, pending.message)
 
 			} else { // Or just send it out to be handled elsewhere
 				s.Incoming <- &packet
 			}
 
-			log.Printf("%s: Command ID:0x%X Packet: % X", s.name, commandID, packet)
 			pos += int(length) + 4
 
 			if pos >= n {
@@ -240,11 +275,13 @@ func main() {
 	}
 	nwkmgrConn := &ZStackNwkMgrServer{nwkmgrTemp}
 
-	gatewayConn, err := connectToServer("gateway", int8(gateway.ZStackGwSysIdT_RPC_SYS_PB_GW), gatewayPort)
+	gatewayTemp, err := connectToServer("gateway", int8(gateway.ZStackGwSysIdT_RPC_SYS_PB_GW), gatewayPort)
 	if err != nil {
 		// handle error
 		log.Printf("Error connecting gateway %s", err)
 	}
+
+	gatewayConn := &ZStackGatewayServer{gatewayTemp}
 
 	go func() {
 		for {
@@ -281,6 +318,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to enable joining: %s", err)
 	}
+	if permitJoinResponse.Status.String() != "STATUS_SUCCESS" {
+		log.Fatalf("Failed to enable joining: %s", permitJoinResponse.Status)
+	}
 	log.Println("Permit join response: ")
 	outJSON(permitJoinResponse)
 
@@ -290,8 +330,44 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to get device list: %s", err)
 	}
-	log.Println("Device list: ")
+	log.Printf("Found %d device(s): ", len(deviceListResponse.DeviceList))
 	outJSON(deviceListResponse)
+
+	for _, device := range deviceListResponse.DeviceList {
+		log.Printf("Got device : %d", device.IeeeAddress)
+		for _, endpoint := range device.SimpleDescList {
+			log.Printf("Got endpoint : %d", endpoint.EndpointId)
+
+			if containsUInt32(endpoint.InputClusters, 0x06) {
+				log.Printf("This endpoint has on/off cluster")
+
+				onOffReq := &gateway.DevSetOnOffStateReq{
+					DstAddress: &gateway.GwAddressStructT{
+						AddressType: gateway.GwAddressTypeT_UNICAST.Enum(),
+						IeeeAddr:    device.IeeeAddress,
+					},
+					State: gateway.GwOnOffStateT_TOGGLE_STATE.Enum(),
+				}
+
+				res := &gateway.GwZigbeeGenericCnf{}
+
+				for i := 0; i < 3; i++ {
+					log.Println("Toggling on/off device")
+
+					err = gatewayConn.SendRequest(onOffReq, res)
+					if err != nil {
+						log.Fatalf("Failed to toggle device: ", err)
+					}
+					log.Printf("Got on/off response")
+					outJSON(res)
+					time.Sleep(2000 * time.Millisecond)
+				}
+
+			}
+
+		}
+		//GwOnOffStateT_TOGGLE_STATE
+	}
 
 	//time.Sleep(2000 * time.Millisecond)
 
@@ -299,6 +375,15 @@ func main() {
 	signal.Notify(c, os.Interrupt, os.Kill)
 	fmt.Println("Got signal:", <-c)
 
+}
+
+func containsUInt32(hackstack []uint32, needle uint32) bool {
+	for _, cluster := range hackstack {
+		if cluster == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func outJSON(thing interface{}) {
