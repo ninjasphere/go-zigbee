@@ -359,7 +359,7 @@ func main() {
 			if containsUInt32(endpoint.InputClusters, 0x06) {
 				log.Printf("This endpoint has on/off cluster")
 
-				onOffReq := &gateway.DevSetOnOffStateReq{
+				toggleRequest := &gateway.DevSetOnOffStateReq{
 					DstAddress: &gateway.GwAddressStructT{
 						AddressType: gateway.GwAddressTypeT_UNICAST.Enum(),
 						IeeeAddr:    device.IeeeAddress,
@@ -367,17 +367,26 @@ func main() {
 					State: gateway.GwOnOffStateT_TOGGLE_STATE.Enum(),
 				}
 
+				powerRequest := &gateway.DevGetPowerReq{
+					DstAddress: &gateway.GwAddressStructT{
+						AddressType: gateway.GwAddressTypeT_UNICAST.Enum(),
+						IeeeAddr:    device.IeeeAddress,
+					},
+				}
+
 				for i := 0; i < 3; i++ {
 					log.Println("Toggling on/off device")
 
 					confirmation := &gateway.GwZigbeeGenericCnf{}
 
-					err = gatewayConn.SendCommand(onOffReq, confirmation)
+					err = gatewayConn.SendCommand(toggleRequest, confirmation)
 					if err != nil {
 						log.Fatalf("Failed to toggle device: ", err)
 					}
 					log.Printf("Got on/off confirmation")
-					outJSON(confirmation)
+					if confirmation.Status.String() != "STATUS_SUCCESS" {
+						log.Fatalf("Failed to request the device to toggle. Status:%s", confirmation.Status.String())
+					}
 
 					response := &gateway.GwZigbeeGenericRspInd{}
 					err = gatewayConn.WaitForSequenceResponse(confirmation.SequenceNumber, response)
@@ -387,7 +396,29 @@ func main() {
 
 					log.Printf("Got toggle response from device! Status: %s", response.Status.String())
 
-					//time.Sleep(2000 * time.Millisecond)
+					//time.Sleep(10000 * time.Millisecond)
+
+					confirmation = &gateway.GwZigbeeGenericCnf{}
+
+					err = gatewayConn.SendCommand(powerRequest, confirmation)
+					if err != nil {
+						log.Fatalf("Failed to request power: ", err)
+					}
+					log.Printf("Got power request confirmation")
+					if confirmation.Status.String() != "STATUS_SUCCESS" {
+						log.Fatalf("Failed to request the power. Status:%s", confirmation.Status.String())
+					}
+
+					powerResponse := &gateway.DevGetPowerRspInd{}
+					err = gatewayConn.WaitForSequenceResponse(confirmation.SequenceNumber, powerResponse)
+					if err != nil {
+						log.Fatalf("Failed to get power response: ", err)
+					}
+
+					//	log.Printf("Got power level from device! Status: %s", powerResponse.Status.String())
+
+					outJSON(powerResponse)
+
 				}
 
 			}
