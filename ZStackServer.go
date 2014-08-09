@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"code.google.com/p/gogoprotobuf/proto"
 )
@@ -42,9 +43,21 @@ func (s *ZStackServer) sendCommand(request *zStackCommand, response *zStackComma
 		complete: make(chan error),
 	}
 
-	error := <-s.pending.complete
-	s.pending = nil
-	return error
+	timeout := make(chan bool, 1)
+	go func() {
+		time.Sleep(1 * time.Second) // All commands should return immediately with at least a confirmation
+		timeout <- true
+	}()
+
+	select {
+	case error := <-s.pending.complete:
+		s.pending = nil
+		return error
+	case <-timeout:
+		s.pending = nil
+		return fmt.Errorf("The request timed out")
+	}
+
 }
 
 func (s *ZStackServer) outgoingLoop() {

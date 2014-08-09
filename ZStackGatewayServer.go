@@ -3,6 +3,7 @@ package zigbee
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"code.google.com/p/gogoprotobuf/proto"
 	"github.com/ninjasphere/go-zigbee/gateway"
@@ -23,7 +24,7 @@ type pendingGatewayResponse struct {
 	finished chan error
 }
 
-func (s *ZStackGateway) WaitForSequenceResponse(sequenceNumber *uint32, response zStackGatewayCommand) error {
+func (s *ZStackGateway) waitForSequenceResponse(sequenceNumber *uint32, response zStackGatewayCommand, timeoutDuration time.Duration) error {
 	number := uint8(*sequenceNumber) // We accept uint32 as thats what comes back from protobuf
 	_, exists := s.pendingResponses[number]
 	if exists {
@@ -36,7 +37,37 @@ func (s *ZStackGateway) WaitForSequenceResponse(sequenceNumber *uint32, response
 	}
 	s.pendingResponses[number] = pending
 
-	return <-pending.finished
+	timeout := make(chan bool, 1)
+	go func() {
+		time.Sleep(timeoutDuration)
+		timeout <- true
+	}()
+
+	select {
+	case error := <-pending.finished:
+		return error
+	case <-timeout:
+		return fmt.Errorf("The request timed out after %s", timeoutDuration)
+	}
+
+}
+
+// SendAsyncCommand sends a command that requires an async response from the device, using ZCL SequenceNumber
+func (s *ZStackGateway) SendAsyncCommand(request zStackGatewayCommand, response zStackGatewayCommand, timeout time.Duration) error {
+	confirmation := &gateway.GwZigbeeGenericCnf{}
+
+	err := s.SendCommand(request, confirmation)
+
+	if err != nil {
+		return err
+	}
+
+	if confirmation.Status.String() != "STATUS_SUCCESS" {
+		return fmt.Errorf("Invalid confirmation status: %s", confirmation.Status.String())
+	}
+
+	return s.waitForSequenceResponse(confirmation.SequenceNumber, response, timeout)
+
 }
 
 // SendCommand sends a protobuf Message to the Z-Stack server, and waits for the response
@@ -76,7 +107,7 @@ func (s *ZStackGateway) incomingZCLLoop() {
 		log.Printf("gateway: Got an incoming gateway message, sequence:%d", sequenceNumber)
 
 		if sequenceNumber == 0 {
-			log.Printf("gateway: Failed to get a sequence number from an incoming gateway message. ????")
+			log.Printf("gateway: Failed to get a sequence number from an incoming gateway message ????")
 		}
 
 		pending := s.pendingResponses[sequenceNumber]
