@@ -12,7 +12,7 @@ import (
 
 type ZStackGateway struct {
 	*ZStackServer
-	pendingResponses map[uint8]*pendingGatewayResponse
+	pendingResponses map[uint32]*pendingGatewayResponse
 }
 
 type zStackGatewayCommand interface {
@@ -25,19 +25,19 @@ type pendingGatewayResponse struct {
 	finished chan error
 }
 
-func (s *ZStackGateway) waitForSequenceResponse(sequenceNumber *uint32, response zStackGatewayCommand, timeoutDuration time.Duration) error {
-	number := uint8(*sequenceNumber) // We accept uint32 as thats what comes back from protobuf
-	log.Printf("Waiting for sequence %d", *sequenceNumber)
-	_, exists := s.pendingResponses[number]
+func (s *ZStackGateway) waitForSequenceResponse(sequenceNumber uint32, response zStackGatewayCommand, timeoutDuration time.Duration) error {
+	// We accept uint32 as thats what comes back from protobuf
+	log.Printf("Waiting for sequence %d", sequenceNumber)
+	_, exists := s.pendingResponses[sequenceNumber]
 	if exists {
-		s.pendingResponses[number].finished <- fmt.Errorf("Another command with the same sequence id (%d) has been sent.", number)
+		s.pendingResponses[sequenceNumber].finished <- fmt.Errorf("Another command with the same sequence id (%d) has been sent.", sequenceNumber)
 	}
 
 	pending := &pendingGatewayResponse{
 		response: response,
 		finished: make(chan error),
 	}
-	s.pendingResponses[number] = pending
+	s.pendingResponses[sequenceNumber] = pending
 
 	timeout := make(chan bool, 1)
 	go func() {
@@ -54,7 +54,7 @@ func (s *ZStackGateway) waitForSequenceResponse(sequenceNumber *uint32, response
 		err = fmt.Errorf("The request timed out after %s", timeoutDuration)
 	}
 
-	s.pendingResponses[number] = nil
+	s.pendingResponses[sequenceNumber] = nil
 
 	return err
 }
@@ -63,17 +63,21 @@ func (s *ZStackGateway) waitForSequenceResponse(sequenceNumber *uint32, response
 func (s *ZStackGateway) SendAsyncCommand(request zStackGatewayCommand, response zStackGatewayCommand, timeout time.Duration) error {
 	confirmation := &gateway.GwZigbeeGenericCnf{}
 
+	spew.Dump("sending", request)
+
 	err := s.SendCommand(request, confirmation)
 
 	if err != nil {
 		return err
 	}
 
+	spew.Dump(confirmation)
+
 	if confirmation.Status.String() != "STATUS_SUCCESS" {
 		return fmt.Errorf("Invalid confirmation status: %s", confirmation.Status.String())
 	}
 
-	return s.waitForSequenceResponse(confirmation.SequenceNumber, response, timeout)
+	return s.waitForSequenceResponse(*confirmation.SequenceNumber, response, timeout)
 }
 
 // SendCommand sends a protobuf Message to the Z-Stack server, and waits for the response
@@ -120,7 +124,7 @@ func (s *ZStackGateway) onIncomingCommand(commandID uint8, bytes *[]byte) {
 		return
 	}
 
-	sequenceNumber := uint8(*message.SequenceNumber)
+	sequenceNumber := *message.SequenceNumber
 
 	log.Printf("gateway: Got an incoming gateway message, sequence:%d", sequenceNumber)
 
@@ -150,7 +154,7 @@ func ConnectToGatewayServer(hostname string, port int) (*ZStackGateway, error) {
 
 	gateway := &ZStackGateway{
 		ZStackServer:     server,
-		pendingResponses: make(map[uint8]*pendingGatewayResponse),
+		pendingResponses: make(map[uint32]*pendingGatewayResponse),
 	}
 
 	server.onIncoming = func(commandID uint8, bytes *[]byte) {
