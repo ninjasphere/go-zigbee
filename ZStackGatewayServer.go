@@ -63,7 +63,7 @@ func (s *ZStackGateway) waitForSequenceResponse(sequenceNumber uint32, response 
 func (s *ZStackGateway) SendAsyncCommand(request zStackGatewayCommand, response zStackGatewayCommand, timeout time.Duration) error {
 	confirmation := &gateway.GwZigbeeGenericCnf{}
 
-	spew.Dump("sending", request)
+	//	spew.Dump("sending", request)
 
 	err := s.SendCommand(request, confirmation)
 
@@ -71,7 +71,7 @@ func (s *ZStackGateway) SendAsyncCommand(request zStackGatewayCommand, response 
 		return err
 	}
 
-	spew.Dump(confirmation)
+	//spew.Dump(confirmation)
 
 	if confirmation.Status.String() != "STATUS_SUCCESS" {
 		return fmt.Errorf("Invalid confirmation status: %s", confirmation.Status.String())
