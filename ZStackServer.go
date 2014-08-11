@@ -53,7 +53,7 @@ func (s *ZStackServer) sendCommand(request *zStackCommand, response *zStackComma
 		// The command was sent sucessfully, so we wait for the response
 		timeout := make(chan bool, 1)
 		go func() {
-			time.Sleep(1 * time.Second) // All commands should return immediately with at least a confirmation
+			time.Sleep(5 * time.Second) // All commands should return immediately with at least a confirmation
 			timeout <- true
 		}()
 
