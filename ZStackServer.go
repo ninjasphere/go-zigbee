@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"code.google.com/p/gogoprotobuf/proto"
@@ -13,17 +14,19 @@ import (
 
 // ZStackServer holds the connection to one of the Z-Stack servers (nwkmgr, gateway and otasrvr)
 type ZStackServer struct {
-	Incoming chan *[]byte // Incoming raw protobuf packets
-
 	name      string
 	subsystem uint8
 	conn      net.Conn
-	outgoing  chan *zStackCommand // Outgoing protobuf messages
 	pending   *zStackPendingCommand
+
+	outgoingSync *sync.Mutex
+
+	onIncoming func(uint8, *[]byte)
 }
 
 // ZStackPendingCommand is a thing
 type zStackPendingCommand struct {
+	request  *zStackCommand
 	response *zStackCommand
 	complete chan error
 }
@@ -36,69 +39,71 @@ type zStackCommand struct {
 
 func (s *ZStackServer) sendCommand(request *zStackCommand, response *zStackCommand) error {
 
-	s.outgoing <- request
+	s.outgoingSync.Lock()
 
 	s.pending = &zStackPendingCommand{
+		request:  request,
 		response: response,
 		complete: make(chan error),
 	}
 
-	timeout := make(chan bool, 1)
-	go func() {
-		time.Sleep(1 * time.Second) // All commands should return immediately with at least a confirmation
-		timeout <- true
-	}()
+	err := s.transmitCommand(request)
 
-	select {
-	case error := <-s.pending.complete:
-		s.pending = nil
-		return error
-	case <-timeout:
-		s.pending = nil
-		return fmt.Errorf("The request timed out")
+	if err == nil {
+		// The command was sent sucessfully, so we wait for the response
+		timeout := make(chan bool, 1)
+		go func() {
+			time.Sleep(1 * time.Second) // All commands should return immediately with at least a confirmation
+			timeout <- true
+		}()
+
+		select {
+		case error := <-s.pending.complete:
+			err = error
+		case <-timeout:
+			err = fmt.Errorf("The request timed out")
+		}
 	}
 
+	s.pending = nil
+	s.outgoingSync.Unlock()
+
+	return err
 }
 
-func (s *ZStackServer) outgoingLoop() {
-	for {
-		command := <-s.outgoing
+func (s *ZStackServer) transmitCommand(command *zStackCommand) error {
 
-		proto.SetDefaults(command.message)
+	proto.SetDefaults(command.message)
 
-		packet, err := proto.Marshal(command.message)
-		if err != nil {
-			log.Fatal("marshaling error: ", err)
-		}
-
-		log.Printf("Protobuf packet %x", packet)
-
-		buffer := new(bytes.Buffer)
-
-		if err != nil {
-			// handle error
-			log.Printf("Error connecting %s", err)
-		}
-
-		// Add the Z-Stack 4-byte header
-		err = binary.Write(buffer, binary.LittleEndian, uint16(len(packet))) // Packet length
-		err = binary.Write(buffer, binary.LittleEndian, s.subsystem)         // Subsystem
-		err = binary.Write(buffer, binary.LittleEndian, command.commandID)   // Command Id
-
-		_, err = buffer.Write(packet)
-
-		log.Printf("%s: Sending packet: % X", s.name, buffer.Bytes())
-
-		// Send it to the Z-Stack server
-		_, err = s.conn.Write(buffer.Bytes())
+	packet, err := proto.Marshal(command.message)
+	if err != nil {
+		log.Fatalf("%s: Outgoing marshaling error: %s", s.name, err)
 	}
+
+	log.Printf("Protobuf packet %x", packet)
+
+	buffer := new(bytes.Buffer)
+
+	// Add the Z-Stack 4-byte header
+	err = binary.Write(buffer, binary.LittleEndian, uint16(len(packet))) // Packet length
+	err = binary.Write(buffer, binary.LittleEndian, s.subsystem)         // Subsystem
+	err = binary.Write(buffer, binary.LittleEndian, command.commandID)   // Command Id
+
+	_, err = buffer.Write(packet)
+
+	log.Printf("%s: Sending packet: % X", s.name, buffer.Bytes())
+
+	// Send it to the Z-Stack server
+	_, err = s.conn.Write(buffer.Bytes())
+	return err
 }
 
 func (s *ZStackServer) incomingLoop() {
 	for {
 		buf := make([]byte, 1024)
 		n, err := s.conn.Read(buf)
-		//log.Printf("Read %d from %s", n, s.name)
+
+		log.Printf("Read %d from %s", n, s.name)
 		if err != nil {
 			log.Fatalf("%s: Error reading socket %s", s.name, err)
 		}
@@ -122,20 +127,19 @@ func (s *ZStackServer) incomingLoop() {
 
 			log.Printf("%s: Found packet of size : %d", s.name, length)
 
+			commandID := int8(buf[pos+3])
+
 			packet := buf[pos+4 : pos+4+int(length)]
 
-			commandID := int8(packet[1])
-
 			log.Printf("%s: Command ID:0x%X Packet: % X", s.name, commandID, packet)
-
-			// Check if this packet has a ZCL request id... TODO
 
 			if s.pending != nil {
 				s.pending.complete <- proto.Unmarshal(packet, s.pending.response.message)
 				s.pending = nil
-
-			} else { // Or just send it out to be handled elsewhere
-				s.Incoming <- &packet
+			} else if s.onIncoming != nil { // Or just send it out to be handled elsewhere
+				go s.onIncoming(uint8(commandID), &packet)
+			} else {
+				log.Printf("%s: ERR: Unhandled incoming packet", s.name)
 			}
 
 			pos += int(length) + 4
@@ -157,15 +161,13 @@ func connectToServer(name string, subsystem uint8, hostname string, port int) (*
 	}
 
 	server := &ZStackServer{
-		name:      name,
-		subsystem: subsystem,
-		conn:      conn,
-		outgoing:  make(chan *zStackCommand),
-		Incoming:  make(chan *[]byte),
+		name:         name,
+		subsystem:    subsystem,
+		conn:         conn,
+		outgoingSync: &sync.Mutex{},
 	}
 
 	go server.incomingLoop()
-	go server.outgoingLoop()
 
 	return server, nil
 }
