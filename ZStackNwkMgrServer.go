@@ -11,7 +11,8 @@ import (
 
 type ZStackNwkMgr struct {
 	*ZStackServer
-	OnDeviceFound func(deviceInfo *nwkmgr.NwkDeviceInfoT)
+	OnDeviceFound  func(deviceInfo *nwkmgr.NwkDeviceInfoT)
+	OnNetworkReady func()
 }
 
 type zStackNwkMgrCommand interface {
@@ -94,6 +95,24 @@ func (s *ZStackNwkMgr) onIncoming(commandID uint8, bytes *[]byte) {
 		}
 
 		s.OnDeviceFound(device.DeviceInfo)
+	case uint8(nwkmgr.NwkMgrCmdIdT_NWK_ZIGBEE_SYSTEM_RESET_CNF):
+		confirmation := &nwkmgr.NwkZigbeeSystemResetCnf{}
+
+		err := proto.Unmarshal(*bytes, confirmation)
+		if err != nil {
+			log.Printf("nwkmgr: Failed to read reset confirmation : %s", err)
+			return
+		}
+		log.Printf("nwkmgr: Reset Confirmed")
+		spew.Dump(confirmation)
+
+	case uint8(nwkmgr.NwkMgrCmdIdT_NWK_ZIGBEE_NWK_READY_IND):
+		log.Printf("nwkmgr: Network Ready")
+
+		if s.OnNetworkReady != nil {
+			s.OnNetworkReady()
+		}
+
 	default:
 		log.Println("nwkmgr: Unknown incoming network manager message!")
 	}
@@ -111,6 +130,9 @@ func ConnectToNwkMgrServer(hostname string, port int) (*ZStackNwkMgr, error) {
 		OnDeviceFound: func(deviceInfo *nwkmgr.NwkDeviceInfoT) {
 			log.Println("nwkmgr: Warning: Device found. You must add an onDeviceFound handler!")
 			spew.Dump(deviceInfo)
+		},
+		OnNetworkReady: func() {
+			log.Println("nwkmgr: Warning: Network ready. You must add an OnNetworkReady handler!")
 		},
 	}
 
