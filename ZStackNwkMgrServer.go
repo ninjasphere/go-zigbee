@@ -2,7 +2,6 @@ package zigbee
 
 import (
 	"fmt"
-	"log"
 
 	"code.google.com/p/gogoprotobuf/proto"
 	"github.com/davecgh/go-spew/spew"
@@ -43,7 +42,7 @@ func (d *ZStackNwkMgr) FetchDeviceList() error {
 	if err != nil {
 		log.Fatalf("Failed to get device list: %s", err)
 	}
-	log.Printf("Found %d device(s): ", len(deviceListResponse.DeviceList))
+	log.Debugf("Found %d device(s): ", len(deviceListResponse.DeviceList))
 
 	for _, deviceInfo := range deviceListResponse.DeviceList {
 		d.OnDeviceFound(deviceInfo)
@@ -54,7 +53,7 @@ func (d *ZStackNwkMgr) FetchDeviceList() error {
 
 func (s *ZStackNwkMgr) Reset(hard bool) error {
 
-	log.Printf("Resetting. Hard: %t", hard)
+	log.Infof("Resetting. Hard: %t", hard)
 
 	mode := nwkmgr.NwkResetModeT_SOFT_RESET.Enum()
 	if hard {
@@ -82,7 +81,7 @@ func (s *ZStackNwkMgr) onIncoming(commandID uint8, bytes *[]byte) {
 
 	//bytes := <-s.Incoming
 
-	log.Printf("nwkmgr: Got nwkmgr message % X", bytes)
+	log.Debugf("nwkmgr: Got nwkmgr message % X", bytes)
 
 	switch commandID {
 	case uint8(nwkmgr.NwkMgrCmdIdT_NWK_ZIGBEE_DEVICE_IND):
@@ -90,7 +89,7 @@ func (s *ZStackNwkMgr) onIncoming(commandID uint8, bytes *[]byte) {
 
 		err := proto.Unmarshal(*bytes, device)
 		if err != nil {
-			log.Printf("nwkmgr: Failed to read device announcement : %s", err)
+			log.Errorf("nwkmgr: Failed to read device announcement : %s, %v", err, *bytes)
 			return
 		}
 
@@ -100,21 +99,23 @@ func (s *ZStackNwkMgr) onIncoming(commandID uint8, bytes *[]byte) {
 
 		err := proto.Unmarshal(*bytes, confirmation)
 		if err != nil {
-			log.Printf("nwkmgr: Failed to read reset confirmation : %s", err)
+			log.Errorf("nwkmgr: Failed to read reset confirmation : %s, %v", err, *bytes)
 			return
 		}
-		log.Printf("nwkmgr: Reset Confirmed")
-		spew.Dump(confirmation)
+		log.Infof("nwkmgr: Reset Confirmed")
+		if log.IsDebugEnabled() {
+			spew.Dump(confirmation)
+		}
 
 	case uint8(nwkmgr.NwkMgrCmdIdT_NWK_ZIGBEE_NWK_READY_IND):
-		log.Printf("nwkmgr: Network Ready")
+		log.Infof("nwkmgr: Network Ready")
 
 		if s.OnNetworkReady != nil {
 			s.OnNetworkReady()
 		}
 
 	default:
-		log.Println("nwkmgr: Unknown incoming network manager message!")
+		log.Debugf("nwkmgr: Unknown incoming network manager message: %d!", commandID)
 	}
 
 }
@@ -128,11 +129,13 @@ func ConnectToNwkMgrServer(hostname string, port int) (*ZStackNwkMgr, error) {
 	nwkmgr := &ZStackNwkMgr{
 		ZStackServer: server,
 		OnDeviceFound: func(deviceInfo *nwkmgr.NwkDeviceInfoT) {
-			log.Println("nwkmgr: Warning: Device found. You must add an onDeviceFound handler!")
-			spew.Dump(deviceInfo)
+			log.Warningf("nwkmgr: Warning: Device found. You must add an onDeviceFound handler!")
+			if log.IsDebugEnabled() {
+				spew.Dump(deviceInfo)
+			}
 		},
 		OnNetworkReady: func() {
-			log.Println("nwkmgr: Warning: Network ready. You must add an OnNetworkReady handler!")
+			log.Warningf("nwkmgr: Warning: Network ready. You must add an OnNetworkReady handler!")
 		},
 	}
 

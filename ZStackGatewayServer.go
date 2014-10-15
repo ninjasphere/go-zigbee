@@ -2,7 +2,6 @@ package zigbee
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	"code.google.com/p/gogoprotobuf/proto"
@@ -27,7 +26,7 @@ type pendingGatewayResponse struct {
 
 func (s *ZStackGateway) waitForSequenceResponse(sequenceNumber uint32, response zStackGatewayCommand, timeoutDuration time.Duration) error {
 	// We accept uint32 as thats what comes back from protobuf
-	log.Printf("Waiting for sequence %d", sequenceNumber)
+	log.Debugf("Waiting for sequence %d", sequenceNumber)
 	_, exists := s.pendingResponses[sequenceNumber]
 	if exists {
 		s.pendingResponses[sequenceNumber].finished <- fmt.Errorf("Another command with the same sequence id (%d) has been sent.", sequenceNumber)
@@ -100,7 +99,7 @@ func (s *ZStackGateway) onIncomingCommand(commandID uint8, bytes *[]byte) {
 
 	//bytes := <-s.Incoming
 
-	log.Printf("gateway: Got gateway message % X", bytes)
+	log.Debugf("gateway: Got gateway message % X", bytes)
 
 	//commandID := uint8((*bytes)[1])
 
@@ -108,11 +107,13 @@ func (s *ZStackGateway) onIncomingCommand(commandID uint8, bytes *[]byte) {
 		report := &gateway.GwAttributeReportingInd{}
 		err := proto.Unmarshal(*bytes, report)
 		if err != nil {
-			log.Printf("gateway: Could not read attribute report : %s", err)
+			log.Errorf("gateway: Could not read attribute report: %s, %v", err, *bytes)
 			return
 		}
 
-		spew.Dump("Got attribute report", report)
+		if log.IsDebugEnabled() {
+			spew.Dump("Got attribute report", report)
+		}
 
 		return
 	}
@@ -120,22 +121,22 @@ func (s *ZStackGateway) onIncomingCommand(commandID uint8, bytes *[]byte) {
 	var message = &gateway.GwZigbeeGenericRspInd{} // Not always this, but it will always give us the sequence number?
 	err := proto.Unmarshal(*bytes, message)
 	if err != nil {
-		log.Printf("gateway: Could not get sequence number from incoming gateway message : %s", err)
+		log.Errorf("gateway: Could not get sequence number from incoming gateway message : %s, %v", err, *bytes)
 		return
 	}
 
 	sequenceNumber := *message.SequenceNumber
 
-	log.Printf("gateway: Got an incoming gateway message, sequence:%d", sequenceNumber)
+	log.Debugf("gateway: Got an incoming gateway message, sequence:%d", sequenceNumber)
 
 	if sequenceNumber == 0 {
-		log.Printf("gateway: Failed to get a sequence number from an incoming gateway message ????")
+		log.Debugf("gateway: Failed to get a sequence number from an incoming gateway message ????")
 	}
 
 	pending := s.pendingResponses[sequenceNumber]
 
 	if pending == nil {
-		log.Printf("gateway: Received response to sequence number %d but we aren't listening for it", sequenceNumber)
+		log.Debugf("gateway: Received response to sequence number %d but we aren't listening for it", sequenceNumber)
 	} else {
 
 		if uint8(pending.response.GetCmdId()) != commandID {
