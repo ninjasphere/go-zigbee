@@ -60,6 +60,18 @@ func (s *ZStackServer) sendCommand(request *zStackCommand, response *zStackComma
 			timeout <- true
 		}()
 
+		if (s == nil) {
+			log.Fatalf("assertion failed: s != nil");
+		}
+
+		if (s.pending == nil) {
+			log.Fatalf("assertion failed: s.pending != nil");
+		}
+
+		if (s.pending.complete == nil) {
+			log.Fatalf("assertion failed: s.pending.complete != nil");
+		}
+
 		select {
 		case error := <-s.pending.complete:
 			err = error
