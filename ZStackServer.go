@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -38,6 +37,10 @@ type zStackCommand struct {
 }
 
 func (s *ZStackServer) sendCommand(request *zStackCommand, response *zStackCommand) error {
+
+	if s == nil {
+		log.Fatalf("receiver was nil!")
+	}
 
 	s.outgoingSync.Lock()
 
@@ -80,7 +83,7 @@ func (s *ZStackServer) transmitCommand(command *zStackCommand) error {
 		log.Fatalf("%s: Outgoing marshaling error: %s", s.name, err)
 	}
 
-	log.Printf("Protobuf packet %x", packet)
+	log.Debugf("Protobuf packet %x", packet)
 
 	buffer := new(bytes.Buffer)
 
@@ -91,7 +94,7 @@ func (s *ZStackServer) transmitCommand(command *zStackCommand) error {
 
 	_, err = buffer.Write(packet)
 
-	log.Printf("%s: Sending packet: % X", s.name, buffer.Bytes())
+	log.Debugf("%s: Sending packet: % X", s.name, buffer.Bytes())
 
 	// Send it to the Z-Stack server
 	_, err = s.conn.Write(buffer.Bytes())
@@ -103,7 +106,7 @@ func (s *ZStackServer) incomingLoop() {
 		buf := make([]byte, 1024)
 		n, err := s.conn.Read(buf)
 
-		log.Printf("Read %d from %s", n, s.name)
+		log.Debugf("Read %d from %s", n, s.name)
 		if err != nil {
 			log.Fatalf("%s: Error reading socket %s", s.name, err)
 		}
@@ -123,23 +126,25 @@ func (s *ZStackServer) incomingLoop() {
 				log.Fatalf("%s: Failed to read packet subsystem %s", s.name, err)
 			}
 
-			log.Printf("%s: Incoming subsystem %d (wanted: %d)", s.name, incomingSubsystem, s.subsystem)
+			log.Debugf("%s: Incoming subsystem %d (wanted: %d)", s.name, incomingSubsystem, s.subsystem)
 
-			log.Printf("%s: Found packet of size : %d", s.name, length)
+			log.Debugf("%s: Found packet of size : %d", s.name, length)
 
 			commandID := int8(buf[pos+3])
 
 			packet := buf[pos+4 : pos+4+int(length)]
 
-			log.Printf("%s: Command ID:0x%X Packet: % X", s.name, commandID, packet)
+			log.Debugf("%s: Command ID:0x%X Packet: % X", s.name, commandID, packet)
 
 			if s.pending != nil {
 				s.pending.complete <- proto.Unmarshal(packet, s.pending.response.message)
+				log.Debugf("have just signalled pending complete and about to reset s.pending")
 				s.pending = nil
+				log.Debugf("have reset pending to nil - possibly unsafe")
 			} else if s.onIncoming != nil { // Or just send it out to be handled elsewhere
 				go s.onIncoming(uint8(commandID), &packet)
 			} else {
-				log.Printf("%s: ERR: Unhandled incoming packet", s.name)
+				log.Errorf("%s: ERR: Unhandled incoming packet: %v", s.name, packet)
 			}
 
 			pos += int(length) + 4
@@ -148,7 +153,6 @@ func (s *ZStackServer) incomingLoop() {
 				break
 			}
 		}
-		//fmt.Printf("Received from %s (len:%d) : % X", s.name, n, buf[:n])
 	}
 }
 
