@@ -60,16 +60,12 @@ func (s *ZStackServer) sendCommand(request *zStackCommand, response *zStackComma
 			timeout <- true
 		}()
 
-		if (s == nil) {
-			log.Fatalf("assertion failed: s != nil");
+		if s == nil {
+			log.Fatalf("assertion failed: s != nil")
 		}
 
-		if (s.pending == nil) {
-			log.Fatalf("assertion failed: s.pending != nil");
-		}
-
-		if (s.pending.complete == nil) {
-			log.Fatalf("assertion failed: s.pending.complete != nil");
+		if s.pending.complete == nil {
+			log.Fatalf("assertion failed: s.pending.complete != nil")
 		}
 
 		select {
@@ -150,9 +146,6 @@ func (s *ZStackServer) incomingLoop() {
 
 			if s.pending != nil {
 				s.pending.complete <- proto.Unmarshal(packet, s.pending.response.message)
-				log.Debugf("have just signalled pending complete and about to reset s.pending")
-				s.pending = nil
-				log.Debugf("have reset pending to nil - possibly unsafe")
 			} else if s.onIncoming != nil { // Or just send it out to be handled elsewhere
 				go s.onIncoming(uint8(commandID), &packet)
 			} else {
