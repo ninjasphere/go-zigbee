@@ -81,7 +81,7 @@ func (s *ZStackNwkMgr) onIncoming(commandID uint8, bytes *[]byte) {
 
 	//bytes := <-s.Incoming
 
-	log.Debugf("nwkmgr: Got nwkmgr message % X", bytes)
+	log.Debugf("nwkmgr: Got nwkmgr message (%s) % X", nwkmgr.NwkMgrCmdIdT_name[int32(commandID)], bytes)
 
 	switch commandID {
 	case uint8(nwkmgr.NwkMgrCmdIdT_NWK_ZIGBEE_DEVICE_IND):
