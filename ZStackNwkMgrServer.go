@@ -2,6 +2,7 @@ package zigbee
 
 import (
 	"fmt"
+	"time"
 
 	"code.google.com/p/gogoprotobuf/proto"
 	"github.com/davecgh/go-spew/spew"
@@ -10,13 +11,74 @@ import (
 
 type ZStackNwkMgr struct {
 	*ZStackServer
-	OnDeviceFound  func(deviceInfo *nwkmgr.NwkDeviceInfoT)
-	OnNetworkReady func()
+	pendingResponses map[uint32]*pendingNwkMgrResponse
+	OnDeviceFound    func(deviceInfo *nwkmgr.NwkDeviceInfoT)
+	OnNetworkReady   func()
 }
 
 type zStackNwkMgrCommand interface {
 	proto.Message
 	GetCmdId() nwkmgr.NwkMgrCmdIdT
+}
+
+type pendingNwkMgrResponse struct {
+	response zStackNwkMgrCommand
+	finished chan error
+}
+
+// SendAsyncCommand sends a command that requires an async response from the device, using ZCL SequenceNumber
+func (s *ZStackNwkMgr) SendAsyncCommand(request zStackNwkMgrCommand, response zStackNwkMgrCommand, timeout time.Duration) error {
+	confirmation := &nwkmgr.NwkZigbeeGenericCnf{}
+
+	//	spew.Dump("sending", request)
+
+	err := s.SendCommand(request, confirmation)
+
+	if err != nil {
+		return err
+	}
+
+	//spew.Dump(confirmation)
+
+	if confirmation.Status.String() != "STATUS_SUCCESS" {
+		return fmt.Errorf("Invalid confirmation status: %s", confirmation.Status.String())
+	}
+
+	return s.waitForSequenceResponse(*confirmation.SequenceNumber, response, timeout)
+}
+
+func (s *ZStackNwkMgr) waitForSequenceResponse(sequenceNumber uint32, response zStackNwkMgrCommand, timeoutDuration time.Duration) error {
+	// We accept uint32 as thats what comes back from protobuf
+	log.Debugf("Waiting for sequence %d", sequenceNumber)
+	_, exists := s.pendingResponses[sequenceNumber]
+	if exists {
+		s.pendingResponses[sequenceNumber].finished <- fmt.Errorf("Another command with the same sequence id (%d) has been sent.", sequenceNumber)
+	}
+
+	pending := &pendingNwkMgrResponse{
+		response: response,
+		finished: make(chan error),
+	}
+	s.pendingResponses[sequenceNumber] = pending
+
+	timeout := make(chan bool, 1)
+	go func() {
+		time.Sleep(timeoutDuration)
+		timeout <- true
+	}()
+
+	var err error
+
+	select {
+	case error := <-pending.finished:
+		err = error
+	case <-timeout:
+		err = fmt.Errorf("The request timed out after %s", timeoutDuration)
+	}
+
+	s.pendingResponses[sequenceNumber] = nil
+
+	return err
 }
 
 // SendCommand sends a protobuf Message to the Z-Stack server, and waits for the response
@@ -127,7 +189,8 @@ func ConnectToNwkMgrServer(hostname string, port int) (*ZStackNwkMgr, error) {
 	}
 
 	nwkmgr := &ZStackNwkMgr{
-		ZStackServer: server,
+		pendingResponses: make(map[uint32]*pendingNwkMgrResponse),
+		ZStackServer:     server,
 		OnDeviceFound: func(deviceInfo *nwkmgr.NwkDeviceInfoT) {
 			log.Warningf("nwkmgr: Warning: Device found. You must add an onDeviceFound handler!")
 			if log.IsDebugEnabled() {
