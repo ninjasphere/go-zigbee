@@ -12,8 +12,9 @@ import (
 type ZStackGateway struct {
 	*ZStackServer
 	pendingResponses         map[uint32]*pendingGatewayResponse
-	zoneStateListeners       map[uint64][]chan *gateway.DevZoneStatusChangeInd
-	attributeReportListeners map[uint64][]chan *gateway.GwAttributeReportingInd
+	zoneStateListeners       []zoneStateListener
+	attributeReportListeners []attributeReportListener
+	boundClustersListeners   []boundClusterListener
 }
 
 type zStackGatewayCommand interface {
@@ -26,28 +27,39 @@ type pendingGatewayResponse struct {
 	finished chan error
 }
 
-func (s *ZStackGateway) OnZoneState(addr uint64) chan *gateway.DevZoneStatusChangeInd {
-	c := make(chan *gateway.DevZoneStatusChangeInd)
-
-	if _, ok := s.zoneStateListeners[addr]; !ok {
-		s.zoneStateListeners[addr] = []chan *gateway.DevZoneStatusChangeInd{}
-	}
-
-	s.zoneStateListeners[addr] = append(s.zoneStateListeners[addr], c)
-
-	return c
+type attributeReportListener struct {
+	address  uint64
+	endpoint uint32
+	channel  chan *gateway.GwAttributeReportingInd
 }
 
-func (s *ZStackGateway) OnAttributeReport(addr uint64) chan *gateway.GwAttributeReportingInd {
-	c := make(chan *gateway.GwAttributeReportingInd)
+type zoneStateListener struct {
+	address  uint64
+	endpoint uint32
+	channel  chan *gateway.DevZoneStatusChangeInd
+}
 
-	if _, ok := s.attributeReportListeners[addr]; !ok {
-		s.attributeReportListeners[addr] = []chan *gateway.GwAttributeReportingInd{}
-	}
+func (s *ZStackGateway) OnZoneState(addr uint64, endpoint uint32) chan *gateway.DevZoneStatusChangeInd {
+	listener := zoneStateListener{addr, endpoint, make(chan *gateway.DevZoneStatusChangeInd)}
 
-	s.attributeReportListeners[addr] = append(s.attributeReportListeners[addr], c)
+	s.zoneStateListeners = append(s.zoneStateListeners, listener)
 
-	return c
+	return listener.channel
+}
+
+type boundClusterListener struct {
+	address  uint64
+	endpoint uint32
+	cluster  uint32
+	channel  chan *gateway.GwZclFrameReceiveInd
+}
+
+func (s *ZStackGateway) OnBoundCluster(addr uint64, endpoint uint32, cluster uint32) chan *gateway.GwZclFrameReceiveInd {
+	listener := boundClusterListener{addr, endpoint, cluster, make(chan *gateway.GwZclFrameReceiveInd)}
+
+	s.boundClustersListeners = append(s.boundClustersListeners, listener)
+
+	return listener.channel
 }
 
 func (s *ZStackGateway) waitForSequenceResponse(sequenceNumber uint32, response zStackGatewayCommand, timeoutDuration time.Duration) error {
@@ -142,14 +154,57 @@ func (s *ZStackGateway) onIncomingCommand(commandID uint8, bytes *[]byte) {
 			spew.Dump("Got attribute report", report)
 		}
 
-		if listeners, ok := s.attributeReportListeners[*report.SrcAddress.IeeeAddr]; ok {
-			for _, listener := range listeners {
-				go func(l chan *gateway.GwAttributeReportingInd) {
-					l <- report
-				}(listener)
+		if len(s.attributeReportListeners) > 0 {
+			for _, listener := range s.attributeReportListeners {
+				if listener.address == *report.SrcAddress.IeeeAddr && listener.endpoint == *report.SrcAddress.EndpointId {
+
+					go func(l chan *gateway.GwAttributeReportingInd) {
+						l <- report
+					}(listener.channel)
+
+				}
+
 			}
 		} else {
 			log.Debugf("gateway: Received an unhandled attribute report from % X : %v", *report.SrcAddress.IeeeAddr, report)
+		}
+
+		return
+	}
+
+	if commandID == uint8(gateway.GwCmdIdT_GW_ZCL_FRAME_RECEIVE_IND) {
+
+		log.Debugf("gateway: Parsing as GwZclFrameReceiveInd")
+
+		frame := &gateway.GwZclFrameReceiveInd{}
+		err := proto.Unmarshal(*bytes, frame)
+		if err != nil {
+			log.Errorf("gateway: Could not read GwZclFrameReceiveInd: %s, %v", err, *bytes)
+			return
+		}
+
+		if log.IsDebugEnabled() {
+			spew.Dump("Got zcl frame (bound cluster?)", frame)
+		}
+
+		handled := false
+
+		for _, listener := range s.boundClustersListeners {
+			if listener.address == *frame.SrcAddress.IeeeAddr && listener.endpoint == *frame.SrcAddress.EndpointId && listener.cluster == *frame.ClusterId {
+
+				go func(l chan *gateway.GwZclFrameReceiveInd) {
+					handled = true
+					l <- frame
+				}(listener.channel)
+
+			} else {
+				log.Infof("Didn't match % X:% X, %d:%d, %d, %d", listener.address, *frame.SrcAddress.IeeeAddr, listener.endpoint, *frame.SrcAddress.EndpointId, listener.cluster, *frame.ClusterId)
+			}
+
+		}
+
+		if !handled {
+			log.Debugf("gateway: Received an unhandled zcl frame from % X : %v", *frame.SrcAddress.IeeeAddr, frame)
 		}
 
 		return
@@ -170,11 +225,14 @@ func (s *ZStackGateway) onIncomingCommand(commandID uint8, bytes *[]byte) {
 			spew.Dump("Got zone status change", zoneStatus)
 		}
 
-		if listeners, ok := s.zoneStateListeners[*zoneStatus.SrcAddress.IeeeAddr]; ok {
-			for _, listener := range listeners {
-				go func(l chan *gateway.DevZoneStatusChangeInd) {
-					l <- zoneStatus
-				}(listener)
+		if len(s.zoneStateListeners) > 0 {
+			for _, listener := range s.zoneStateListeners {
+				if listener.address == *zoneStatus.SrcAddress.IeeeAddr && listener.endpoint == *zoneStatus.SrcAddress.EndpointId {
+
+					go func(l chan *gateway.DevZoneStatusChangeInd) {
+						l <- zoneStatus
+					}(listener.channel)
+				}
 			}
 		} else {
 			log.Debugf("gateway: Received an unhandled zone status change from % X : %v", *zoneStatus.SrcAddress.IeeeAddr, zoneStatus)
@@ -236,9 +294,10 @@ func ConnectToGatewayServer(hostname string, port int) (*ZStackGateway, error) {
 
 	gateway := &ZStackGateway{
 		ZStackServer:             server,
-		pendingResponses:         make(map[uint32]*pendingGatewayResponse),
-		zoneStateListeners:       make(map[uint64][]chan *gateway.DevZoneStatusChangeInd),
-		attributeReportListeners: make(map[uint64][]chan *gateway.GwAttributeReportingInd),
+		pendingResponses:         map[uint32]*pendingGatewayResponse{},
+		zoneStateListeners:       []zoneStateListener{},
+		attributeReportListeners: []attributeReportListener{},
+		boundClustersListeners:   []boundClusterListener{},
 	}
 
 	server.onIncoming = func(commandID uint8, bytes *[]byte) {
