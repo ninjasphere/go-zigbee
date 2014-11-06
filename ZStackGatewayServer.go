@@ -197,8 +197,6 @@ func (s *ZStackGateway) onIncomingCommand(commandID uint8, bytes *[]byte) {
 					l <- frame
 				}(listener.channel)
 
-			} else {
-				log.Infof("Didn't match % X:% X, %d:%d, %d, %d", listener.address, *frame.SrcAddress.IeeeAddr, listener.endpoint, *frame.SrcAddress.EndpointId, listener.cluster, *frame.ClusterId)
 			}
 
 		}
