@@ -7,7 +7,6 @@ It is used by the Ninja Sphere in https://github.com/ninjasphere/driver-go-zigbe
 ## License
 
 Copyright 2014 Ninja Blocks, Inc. All rights reserved.
-
-Licensed under the Apache License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0
+Licensed under the MIT License
 
 The .proto files are Copyright 2013 Texas Instruments Incorporated. All rights reserved.
