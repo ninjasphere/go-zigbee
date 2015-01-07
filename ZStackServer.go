@@ -138,16 +138,16 @@ func (s *ZStackServer) incomingLoop() {
 
 			log.Debugf("%s: Found packet of size : %d", s.name, length)
 
-			commandID := int8(buf[pos+3])
+			commandID := uint8(buf[pos+3])
 
 			packet := buf[pos+4 : pos+4+int(length)]
 
 			log.Debugf("%s: Command ID:0x%X Packet: % X", s.name, commandID, packet)
 
-			if s.pending != nil {
+			if s.pending != nil && commandID == s.pending.response.commandID {
 				s.pending.complete <- proto.Unmarshal(packet, s.pending.response.message)
 			} else if s.onIncoming != nil { // Or just send it out to be handled elsewhere
-				go s.onIncoming(uint8(commandID), &packet)
+				go s.onIncoming(commandID, &packet)
 			} else {
 				log.Errorf("%s: ERR: Unhandled incoming packet: %v", s.name, packet)
 			}
