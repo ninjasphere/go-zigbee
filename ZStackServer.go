@@ -144,12 +144,12 @@ func (s *ZStackServer) incomingLoop() {
 
 			log.Debugf("%s: Command ID:0x%X Packet: % X", s.name, commandID, packet)
 
+			if s.pending != nil && s.pending.response == nil {
+				log.Fatalf("assertion failed: s.pending.response == nil: (commandID = %d)", commandID)
+			}
+
 			if s.pending != nil && commandID == s.pending.response.commandID {
-				if s.pending.response != nil {
-					s.pending.complete <- proto.Unmarshal(packet, s.pending.response.message)
-				} else {
-					log.Errorf("ERR: dropped because s.pending.response == nil (commandID = %d)", commandID)
-				}
+				s.pending.complete <- proto.Unmarshal(packet, s.pending.response.message)
 			} else if s.onIncoming != nil { // Or just send it out to be handled elsewhere
 				go s.onIncoming(commandID, &packet)
 			} else {
