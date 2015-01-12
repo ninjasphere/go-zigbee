@@ -42,6 +42,10 @@ func (s *ZStackServer) sendCommand(request *zStackCommand, response *zStackComma
 		log.Fatalf("receiver was nil!")
 	}
 
+	if response == nil {
+		log.Fatalf("illegal argument: response was nil!")
+	}
+
 	s.outgoingSync.Lock()
 
 	s.pending = &zStackPendingCommand{
