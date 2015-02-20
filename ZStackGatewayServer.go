@@ -278,8 +278,9 @@ func (s *ZStackGateway) onIncomingCommand(commandID uint8, bytes *[]byte) {
 
 		if uint8(pending.response.GetCmdId()) != commandID {
 			pending.finished <- fmt.Errorf("Wrong ZCL response type. Wanted: 0x%X Received: 0x%X", uint8(pending.response.GetCmdId()), commandID)
+		} else {
+			pending.finished <- proto.Unmarshal(*bytes, pending.response)
 		}
-		pending.finished <- proto.Unmarshal(*bytes, pending.response)
 	}
 
 }
