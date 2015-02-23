@@ -144,7 +144,7 @@ NoOutgoing:
 		var pending *zStackPendingCommand = nil
 
 		select {
-		case pending := <-s.outgoing:
+		case pending = <-s.outgoing:
 			err := s.transmitCommand(pending.request)
 			if err != nil {
 				pending.complete <- err
