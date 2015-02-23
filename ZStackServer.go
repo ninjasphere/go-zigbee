@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	"code.google.com/p/gogoprotobuf/proto"
@@ -13,13 +12,11 @@ import (
 
 // ZStackServer holds the connection to one of the Z-Stack servers (nwkmgr, gateway and otasrvr)
 type ZStackServer struct {
-	name      string
-	subsystem uint8
-	conn      net.Conn
-	pending   *zStackPendingCommand
-
-	outgoingSync *sync.Mutex
-
+	name       string
+	subsystem  uint8
+	conn       net.Conn
+	outgoing   chan *zStackPendingCommand
+	received   chan *zStackReceivedPacket
 	onIncoming func(uint8, *[]byte)
 }
 
@@ -28,6 +25,11 @@ type zStackPendingCommand struct {
 	request  *zStackCommand
 	response *zStackCommand
 	complete chan error
+}
+
+type zStackReceivedPacket struct {
+	commandID uint8
+	packet    []byte
 }
 
 // ZStackCommand contains a protobuf message and a command id
@@ -46,42 +48,14 @@ func (s *ZStackServer) sendCommand(request *zStackCommand, response *zStackComma
 		log.Fatalf("illegal argument: response was nil!")
 	}
 
-	s.outgoingSync.Lock()
-
-	s.pending = &zStackPendingCommand{
+	pending := &zStackPendingCommand{
 		request:  request,
 		response: response,
 		complete: make(chan error),
 	}
 
-	err := s.transmitCommand(request)
-
-	if err == nil {
-		// The command was sent sucessfully, so we wait for the response
-		timeout := make(chan bool, 1)
-		go func() {
-			time.Sleep(5 * time.Second) // All commands should return immediately with at least a confirmation
-			timeout <- true
-		}()
-
-		if s == nil {
-			log.Fatalf("assertion failed: s != nil")
-		}
-
-		if s.pending.complete == nil {
-			log.Fatalf("assertion failed: s.pending.complete != nil")
-		}
-
-		select {
-		case error := <-s.pending.complete:
-			err = error
-		case <-timeout:
-			err = fmt.Errorf("The request timed out")
-		}
-	}
-
-	s.pending = nil
-	s.outgoingSync.Unlock()
+	s.outgoing <- pending
+	err := <-pending.complete
 
 	return err
 }
@@ -148,16 +122,9 @@ func (s *ZStackServer) incomingLoop() {
 
 			log.Debugf("%s: Command ID:0x%X Packet: % X", s.name, commandID, packet)
 
-			if s.pending != nil && s.pending.response == nil {
-				log.Fatalf("assertion failed: s.pending.response == nil: (commandID = %d)", commandID)
-			}
-
-			if s.pending != nil && commandID == s.pending.response.commandID {
-				s.pending.complete <- proto.Unmarshal(packet, s.pending.response.message)
-			} else if s.onIncoming != nil { // Or just send it out to be handled elsewhere
-				go s.onIncoming(commandID, &packet)
-			} else {
-				log.Errorf("%s: ERR: Unhandled incoming packet: %v", s.name, packet)
+			s.received <- &zStackReceivedPacket{
+				commandID: commandID,
+				packet:    packet,
 			}
 
 			pos += int(length) + 4
@@ -169,6 +136,55 @@ func (s *ZStackServer) incomingLoop() {
 	}
 }
 
+// This loop runs for ever. It processes one outgoing packet at a time (looking for matching responses) and any number
+// of non-matching inbound packets.
+func (s *ZStackServer) matchingLoop() {
+NoOutgoing:
+	for {
+		var pending *zStackPendingCommand = nil
+
+		select {
+		case pending := <-s.outgoing:
+			err := s.transmitCommand(pending.request)
+			if err != nil {
+				pending.complete <- err
+				continue
+			}
+		case incoming := <-s.received:
+			if s.onIncoming != nil {
+				go s.onIncoming(incoming.commandID, &incoming.packet)
+			} else {
+				log.Errorf("%s: ERR: Unhandled incoming command, packet: %d, %X", s.name, incoming.commandID, incoming.packet)
+			}
+			continue
+		}
+
+		timeout := time.NewTimer(time.Duration(5) * time.Second)
+
+		for {
+			select {
+			case incoming := <-s.received:
+				if incoming.commandID == pending.response.commandID {
+					pending.complete <- proto.Unmarshal(incoming.packet, pending.response.message)
+					continue NoOutgoing
+				} else {
+					if s.onIncoming != nil {
+						go s.onIncoming(incoming.commandID, &incoming.packet)
+					} else {
+						log.Errorf("%s: ERR: Unhandled incoming command, packet: %d, %X", s.name, incoming.commandID, incoming.packet)
+					}
+					continue
+				}
+			case _ = <-timeout.C:
+				pending.complete <- fmt.Errorf("timed out while waiting for response to commandID: %d", pending.response.commandID)
+				continue NoOutgoing
+			}
+		}
+
+	}
+
+}
+
 func connectToServer(name string, subsystem uint8, hostname string, port int) (*ZStackServer, error) {
 
 	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", hostname, port))
@@ -178,13 +194,19 @@ func connectToServer(name string, subsystem uint8, hostname string, port int) (*
 	}
 
 	server := &ZStackServer{
-		name:         name,
-		subsystem:    subsystem,
-		conn:         conn,
-		outgoingSync: &sync.Mutex{},
+		name:      name,
+		subsystem: subsystem,
+		conn:      conn,
+		outgoing:  make(chan *zStackPendingCommand),
+		received:  make(chan *zStackReceivedPacket),
 	}
 
 	go server.incomingLoop()
+	go server.matchingLoop()
 
 	return server, nil
 }
+
+// proposed re-write
+// one go routine extracts packets from the wire as fast as they come
+// another go routine accepts outbound packets and matches inbound packets, times out waits for and matches inbound packets
