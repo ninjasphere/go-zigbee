@@ -161,6 +161,12 @@ NoOutgoing:
 
 		timeout := time.NewTimer(time.Duration(5) * time.Second)
 
+		if pending == nil {
+			log.Fatalf("logic error: pending == nil")
+		} else if pending.response == nil {
+			log.Fatalf("logic error: pending.response == nil")
+		}
+
 		for {
 			select {
 			case incoming := <-s.received:
