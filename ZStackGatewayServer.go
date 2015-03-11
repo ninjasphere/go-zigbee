@@ -202,7 +202,7 @@ func (s *ZStackGateway) onIncomingCommand(commandID uint8, bytes *[]byte) {
 		}
 
 		if !handled {
-			log.Debugf("gateway: Received an unhandled zcl frame from % X : %v", *frame.SrcAddress.IeeeAddr, frame)
+			log.Debugf("gateway: Received an unhandled zcl frame from %+v : %+v", *frame.SrcAddress, frame)
 		}
 
 		return
