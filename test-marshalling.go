@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"log"
 
-	"code.google.com/p/gogoprotobuf/proto"
+	"github.com/gogo/protobuf/proto"
 
 	"github.com/ninjasphere/go-zigbee/nwkmgr"
 )

@@ -1,7 +1,7 @@
 package zigbee
 
 import (
-	"code.google.com/p/gogoprotobuf/proto"
+	"github.com/gogo/protobuf/proto"
 	"github.com/ninjasphere/go-zigbee/otasrvr"
 )
 

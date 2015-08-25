@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"code.google.com/p/gogoprotobuf/proto"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/gogo/protobuf/proto"
 	"github.com/ninjasphere/go-zigbee/nwkmgr"
 )
 

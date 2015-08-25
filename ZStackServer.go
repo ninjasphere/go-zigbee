@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"code.google.com/p/gogoprotobuf/proto"
+	"github.com/gogo/protobuf/proto"
 )
 
 // ZStackServer holds the connection to one of the Z-Stack servers (nwkmgr, gateway and otasrvr)
